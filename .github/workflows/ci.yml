@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format · types · lint · tests · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run lint -- --max-warnings 15
+      - run: npm test
+      - run: npm run build
+      - name: Artifact validation (no secrets / source maps / inline scripts in the browser bundle)
+        run: npm run verify:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: |
+            dist/client
+            dist-server
+          retention-days: 7
+
+  security:
+    name: Dependency audit · secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Dependency audit (production deps, fail on high+)
+        run: npm run audit:deps
+      - name: Secret scan (repo files)
+        run: node scripts/scan-secrets.mjs
+      - name: Secret scan (full git history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  postgres-smoke:
+    name: Real PostgreSQL migrations + boot smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: quality
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: voxy
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: voxy
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U voxy" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Boot the production bundle against PostgreSQL (staging-grade config; fails closed if anything is missing)
+        env:
+          DEPLOY_ENV: staging
+          APP_URL: https://staging.example.test
+          PORT: "8080"
+          TRUST_PROXY_HOPS: "1"
+          DATABASE_URL: postgres://voxy:ci-only-password@127.0.0.1:5432/voxy
+          DATABASE_SSL: disable
+          AUTO_MIGRATE: "true"
+          APP_SECRET: ci-only-secret-that-is-at-least-32-characters-long
+          SMTP_URL: smtp://127.0.0.1:2525
+          LEGAL_COMPANY_NAME: CI Test Company
+          LEGAL_CONTACT_EMAIL: ci@example.test
+          LEGAL_REVIEWED: "false"
+        run: |
+          node dist-server/index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/health >/dev/null && break; sleep 1; done
+          BASE_URL=http://127.0.0.1:8080 node scripts/smoke.mjs || { cat server.log; exit 1; }
+      - name: Server refuses to start with missing production config (fail closed)
+        run: |
+          if DEPLOY_ENV=production APP_URL=https://x.example node dist-server/index.js; then echo "server started without required config"; exit 1; fi
