@@ -1,0 +1,22 @@
+dist
+dist-server
+node_modules
+package-lock.json
+.data
+public
+
+# Original VOXY UI sources: kept byte-identical to the pre-migration repository (UI freeze) so reviews show only intentional changes.
+src/components/CustomCursor.tsx
+src/components/GlassCard.tsx
+src/components/Icons.tsx
+src/components/Magnetic.tsx
+src/components/Reveal.tsx
+src/lib/SmoothScroll.tsx
+src/utils/cn.ts
+src/sections/Capabilities.tsx
+src/sections/Intelligence.tsx
+src/sections/Marquee.tsx
+src/sections/Quote.tsx
+src/sections/Hero.tsx
+src/sections/Engineering.tsx
+src/index.css
